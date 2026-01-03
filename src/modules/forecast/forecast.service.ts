@@ -68,6 +68,7 @@ export class ForecastService {
       summary,
       topHours,
     });
+    console.log(narrative);
 
     return {
       meta: {

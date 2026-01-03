@@ -15,20 +15,10 @@ export class ForecastPointDto {
   @ApiProperty({ example: 12.3, nullable: true })
   wind!: number | null;
 
-  @ApiProperty({
-    example: 78,
-    minimum: 0,
-    maximum: 100,
-    description: 'Главное: пригодность неба для наблюдений',
-  })
+  @ApiProperty({ example: 78, minimum: 0, maximum: 100 })
   observingScore!: number;
 
-  @ApiProperty({
-    example: 62,
-    minimum: 0,
-    maximum: 100,
-    description: 'Бонус: насколько комфортно стоять на улице',
-  })
+  @ApiProperty({ example: 62, minimum: 0, maximum: 100 })
   comfortScore!: number;
 
   @ApiProperty({
@@ -37,6 +27,34 @@ export class ForecastPointDto {
     example: ['cloudy_mid', 'windy'],
   })
   reasons!: EReasonCode[];
+}
+
+export class ForecastMetaDto {
+  @ApiProperty({ example: 55.7558 })
+  lat!: number;
+
+  @ApiProperty({ example: 37.6173 })
+  lon!: number;
+
+  @ApiProperty({ example: 'Europe/Moscow' })
+  tz!: string;
+
+  @ApiProperty({ example: 'week', enum: ['day', 'week', 'month'] as const })
+  period!: 'day' | 'week' | 'month';
+
+  @ApiProperty({ example: '2026-01-03T08:28:27.112Z' })
+  generatedAt!: string;
+
+  @ApiProperty({ example: 'open-meteo' })
+  source!: 'open-meteo';
+}
+
+export class ForecastResponseDto {
+  @ApiProperty({ type: ForecastMetaDto })
+  meta!: ForecastMetaDto;
+
+  @ApiProperty({ type: ForecastPointDto, isArray: true })
+  timeseries!: ForecastPointDto[];
 
   @ApiProperty({ type: LlmNarrativeDto })
   narrative!: LlmNarrativeDto;

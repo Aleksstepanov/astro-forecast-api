@@ -2,7 +2,7 @@ import { Controller, Get, Query } from '@nestjs/common';
 import { ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { ForecastService } from './forecast.service';
 import { ForecastQueryDto } from './dto/forecast.query.dto';
-import { ForecastPointDto } from './dto/forecast.response.dto';
+import { ForecastResponseDto } from './dto/forecast.response.dto';
 
 @ApiTags('forecast')
 @Controller('forecast')
@@ -11,8 +11,8 @@ export class ForecastController {
 
   @Get()
   @ApiOkResponse({
-    description: 'Погода (почасовой ряд) от Open-Meteo',
-    type: ForecastPointDto,
+    description: 'Астропрогноз (погода + анализ)',
+    type: ForecastResponseDto,
   })
   getForecast(@Query() query: ForecastQueryDto) {
     return this.forecastService.getForecast({
