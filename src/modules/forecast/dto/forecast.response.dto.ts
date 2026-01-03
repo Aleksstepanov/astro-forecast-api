@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { EReasonCode } from '../../../core/observing';
+import { LlmNarrativeDto } from '../../llm/dto/llm-narrative.dto';
 
 export class ForecastPointDto {
   @ApiProperty({ example: '2026-01-03T00:00:00+03:00' })
@@ -36,4 +37,7 @@ export class ForecastPointDto {
     example: ['cloudy_mid', 'windy'],
   })
   reasons!: EReasonCode[];
+
+  @ApiProperty({ type: LlmNarrativeDto })
+  narrative!: LlmNarrativeDto;
 }

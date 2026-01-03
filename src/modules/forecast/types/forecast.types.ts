@@ -1,4 +1,5 @@
 import type { EReasonCode } from '../../../core/observing';
+import type { TLlmNarrative } from '../../llm/types/llm.types';
 
 export type TForecastPeriod = 'day' | 'week' | 'month';
 
@@ -23,4 +24,5 @@ export type TForecastResponse = Readonly<{
     source: 'open-meteo';
   }>;
   timeseries: ReadonlyArray<TForecastPoint>;
+  narrative: TLlmNarrative;
 }>;

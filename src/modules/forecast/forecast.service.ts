@@ -1,20 +1,26 @@
 import { Injectable } from '@nestjs/common';
+
+import { OpenMeteoProvider } from './providers/open-meteo.provider';
+import { mapOpenMeteoToTimeseries } from './mappers/map-open-meteo-to-forecast';
+
 import type {
   TForecastPeriod,
   TForecastResponse,
 } from './types/forecast.types';
-import { OpenMeteoProvider } from './providers/open-meteo.provider';
-import { mapOpenMeteoToTimeseries } from './mappers/map-open-meteo-to-forecast';
+import { LlmService } from '../llm/llm.service';
 
 @Injectable()
 export class ForecastService {
-  constructor(private readonly openMeteo: OpenMeteoProvider) {}
+  constructor(
+    private readonly openMeteo: OpenMeteoProvider,
+    private readonly llm: LlmService,
+  ) {}
 
-  private periodToDays(period: TForecastPeriod): number {
+  private periodToDays = (period: TForecastPeriod): number => {
     if (period === 'day') return 1;
     if (period === 'week') return 7;
-    return 30; // month (MVP)
-  }
+    return 30;
+  };
 
   async getForecast(args: {
     lat: number;
@@ -31,6 +37,38 @@ export class ForecastService {
       days,
     });
 
+    const timeseries = mapOpenMeteoToTimeseries(raw);
+
+    // Топ часов по observingScore (для текста)
+    const topHours = [...timeseries]
+      .sort((a, b) => b.observingScore - a.observingScore)
+      .slice(0, 8)
+      .map((x) => ({
+        ts: x.ts,
+        observingScore: x.observingScore,
+        reasons: x.reasons.map(String),
+      }));
+
+    const avg =
+      timeseries.length === 0
+        ? 0
+        : Math.round(
+            timeseries.reduce((s, x) => s + x.observingScore, 0) /
+              timeseries.length,
+          );
+
+    const max = timeseries.reduce((m, x) => Math.max(m, x.observingScore), 0);
+
+    // Короткая сводка — чтобы LLM не плавал
+    const summary = `Средний observingScore: ${avg}/100. Лучший час: ${max}/100.`;
+
+    const narrative = await this.llm.generateNarrative({
+      tz: args.tz,
+      period: args.period,
+      summary,
+      topHours,
+    });
+
     return {
       meta: {
         lat: args.lat,
@@ -40,7 +78,8 @@ export class ForecastService {
         generatedAt: new Date().toISOString(),
         source: 'open-meteo',
       },
-      timeseries: mapOpenMeteoToTimeseries(raw),
+      timeseries,
+      narrative,
     };
   }
 }
