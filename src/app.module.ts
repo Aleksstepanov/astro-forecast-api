@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
+import { LocationsModule } from './modules/locations/locations.module';
+import { ForecastModule } from './modules/forecast/forecast.module';
 
 @Module({
   imports: [
@@ -22,6 +24,8 @@ import { AppController } from './app.controller';
         synchronize: false, // ВАЖНО: не включаем авто-синк в проде. На старте тоже лучше без него.
       }),
     }),
+    LocationsModule,
+    ForecastModule,
   ],
   controllers: [AppController],
 })
