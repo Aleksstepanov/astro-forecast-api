@@ -1,4 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Inject } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { createHash } from 'crypto';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -8,11 +10,21 @@ type TChatCompletionResponse = {
   choices?: Array<{ message?: { content?: string } }>;
 };
 
+type TCache = {
+  get: (key: string) => Promise<unknown>;
+  set: (
+    key: string,
+    value: unknown,
+    options?: { ttl?: number },
+  ) => Promise<void>;
+};
+
 @Injectable()
 export class LlmService {
   constructor(
     private readonly http: HttpService,
     private readonly config: ConfigService,
+    @Inject(CACHE_MANAGER) private readonly cache: TCache,
   ) {}
 
   private getHeaders = (): Record<string, string> => {
@@ -25,48 +37,95 @@ export class LlmService {
       'Content-Type': 'application/json',
     };
 
-    // Опциональная атрибуция OpenRouter
     if (siteUrl) headers['HTTP-Referer'] = siteUrl;
     if (appName) headers['X-Title'] = appName;
 
     return headers;
   };
 
-  private normalizeError(error: unknown): string {
-    if (typeof error === 'string') {
-      return error;
-    }
+  private normalizeError = (error: unknown): string => {
+    if (typeof error === 'string') return error;
+    if (error instanceof Error) return error.message || 'llm_failed';
 
-    if (error instanceof Error) {
-      return error.message || 'llm_failed';
-    }
-
-    if (this.hasStringProp(error, 'code')) {
-      return error.code;
-    }
-
-    if (this.hasStringProp(error, 'message')) {
-      return error.message;
+    if (typeof error === 'object' && error !== null) {
+      const rec = error as Record<string, unknown>;
+      if (typeof rec.code === 'string') return rec.code;
+      if (typeof rec.message === 'string') return rec.message;
     }
 
     return 'llm_failed';
-  }
+  };
 
-  private hasStringProp<T extends string>(
-    value: unknown,
-    prop: T,
-  ): value is Record<T, string> {
-    if (typeof value !== 'object' || value === null) return false;
+  private isLlmNarrative = (v: unknown): v is TLlmNarrative => {
+    if (typeof v !== 'object' || v === null) return false;
+    const rec = v as Record<string, unknown>;
 
-    // Тут value: object. Приводим к Record<string, unknown> — это НЕ any.
-    const rec = value as Record<string, unknown>;
-    return typeof rec[prop] === 'string';
-  }
+    // TLlmNarrative: { source: 'llm'|'fallback', text: string, model: string, error?: string }
+    if (rec.source !== 'llm' && rec.source !== 'fallback') return false;
+    if (typeof rec.text !== 'string') return false;
+    if (typeof rec.model !== 'string') return false;
 
-  /**
-   * Генерирует "человеческий" текст.
-   * Важно: никогда не кидает исключение наружу — либо llm, либо fallback.
-   */
+    if (
+      'error' in rec &&
+      rec.error !== undefined &&
+      typeof rec.error !== 'string'
+    ) {
+      return false;
+    }
+
+    return true;
+  };
+
+  private makeCacheKey = (args: {
+    tz: string;
+    period: 'day' | 'week' | 'month';
+    summary: string;
+    topHours: Array<{ ts: string; observingScore: number; reasons: string[] }>;
+  }): string => {
+    const payload = {
+      tz: args.tz,
+      period: args.period,
+      summary: args.summary,
+      topHours: args.topHours.map((h) => ({
+        ts: h.ts,
+        observingScore: h.observingScore,
+        reasons: [...h.reasons].sort(),
+      })),
+      promptVersion: 1,
+    };
+
+    const raw = JSON.stringify(payload);
+    const hash = createHash('sha256').update(raw).digest('hex');
+    return `llm:narrative:${hash}`;
+  };
+
+  private fallbackText = (args: {
+    summary: string;
+    topHours: Array<{ ts: string; observingScore: number; reasons: string[] }>;
+  }): string => {
+    const best = args.topHours.slice(0, 5);
+
+    const bestLines =
+      best.length === 0
+        ? 'Лучших часов не найдено.'
+        : best
+            .map(
+              (h) =>
+                `• ${h.ts} — ${h.observingScore}/100 (${h.reasons.join(', ')})`,
+            )
+            .join('\n');
+
+    return [
+      'Наш ИИ-друг ушёл в туман 🌫️, поэтому кратко руками:',
+      args.summary,
+      '',
+      'Лучшие часы по текущим данным:',
+      bestLines,
+      '',
+      'Подсказка: если облачность высокая — смысла выходить мало, даже при комфортном ветре.',
+    ].join('\n');
+  };
+
   generateNarrative = async (args: {
     tz: string;
     period: 'day' | 'week' | 'month';
@@ -80,6 +139,14 @@ export class LlmService {
     const timeoutMs = Number(
       this.config.get<string>('OPENROUTER_TIMEOUT_MS', '8000'),
     );
+
+    const cacheKey = this.makeCacheKey(args);
+
+    // 1) читаем кэш безопасно (unknown -> guard)
+    const cachedRaw = await this.cache.get(cacheKey);
+    if (this.isLlmNarrative(cachedRaw)) {
+      return cachedRaw;
+    }
 
     const url = 'https://openrouter.ai/api/v1/chat/completions';
 
@@ -120,54 +187,41 @@ export class LlmService {
 
       const text = resp.data.choices?.[0]?.message?.content?.trim();
 
-      if (!text) {
-        return {
-          source: 'fallback',
-          text: this.fallbackText(args),
-          model,
-          error: 'empty_response',
-        };
-      }
+      const result: TLlmNarrative = text
+        ? { source: 'llm', text, model }
+        : {
+            source: 'fallback',
+            text: this.fallbackText({
+              summary: args.summary,
+              topHours: args.topHours,
+            }),
+            model,
+            error: 'empty_response',
+          };
 
-      return { source: 'llm', text, model };
+      const ttl = Number(this.config.get<string>('LLM_CACHE_TTL_SEC', '43200'));
+      await this.cache.set(cacheKey, result, { ttl });
+
+      return result;
     } catch (e: unknown) {
       const err = this.normalizeError(e);
 
-      return {
+      const result: TLlmNarrative = {
         source: 'fallback',
-        text: this.fallbackText(args),
+        text: this.fallbackText({
+          summary: args.summary,
+          topHours: args.topHours,
+        }),
         model,
         error: err,
       };
+
+      const negativeTtl = Number(
+        this.config.get<string>('LLM_NEGATIVE_CACHE_TTL_SEC', '300'),
+      );
+      await this.cache.set(cacheKey, result, { ttl: negativeTtl });
+
+      return result;
     }
-  };
-
-  private fallbackText = (args: {
-    tz: string;
-    period: 'day' | 'week' | 'month';
-    summary: string;
-    topHours: Array<{ ts: string; observingScore: number; reasons: string[] }>;
-  }): string => {
-    const best = args.topHours.slice(0, 5);
-
-    const bestLines =
-      best.length === 0
-        ? 'Лучших часов не найдено.'
-        : best
-            .map(
-              (h) =>
-                `• ${h.ts} — ${h.observingScore}/100 (${h.reasons.join(', ')})`,
-            )
-            .join('\n');
-
-    return [
-      'Наш ИИ-друг ушёл в туман 🌫️, поэтому кратко руками:',
-      args.summary,
-      '',
-      'Лучшие часы по текущим данным:',
-      bestLines,
-      '',
-      'Подсказка: если облачность высокая — смысла выходить мало, даже при комфортном ветре.',
-    ].join('\n');
   };
 }
